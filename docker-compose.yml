@@ -1,0 +1,26 @@
+version: '3.9'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - "${MUSIC_DIR:-./music}:/music:ro"
+      - ./data:/app/data
+    environment:
+      - MUSIC_DIR=/music
+      - PORT=8000
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+      - KOKORO_VOICE=${KOKORO_VOICE:-af_heart}
+      - CROSSFADE_MS=${CROSSFADE_MS:-4000}
+      - DEFAULT_MOOD=${DEFAULT_MOOD:-chill}
+      - DEFAULT_PERSONA=${DEFAULT_PERSONA:-smooth}
+      - DATA_DIR=/app/data
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
