@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
 
 from src.config import settings
 from src.db.database import init_db, AsyncSessionLocal
@@ -13,7 +14,7 @@ from src.db.models import Track
 from src.api.routes import router
 from src.api.websocket import hub
 from src.dj.orchestrator import orchestrator
-from src.library.scanner import scan_library
+from src.library.scanner import scan_library, scan_single
 from src.library.watcher import start_watcher, stop_watcher
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
@@ -22,13 +23,9 @@ logger = logging.getLogger(__name__)
 
 async def _file_change_callback(path: str):
     async with AsyncSessionLocal() as db:
-        from src.library.scanner import scan_single
-        from sqlalchemy import select, delete
-        import os
         if os.path.exists(path):
             await scan_single(db, path)
         else:
-            from src.db.models import Track
             result = await db.execute(select(Track).where(Track.file_path == path))
             t = result.scalar_one_or_none()
             if t:
@@ -63,6 +60,10 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     stop_watcher()
+    try:
+        await orchestrator.end_session()
+    except Exception as e:
+        logger.warning(f"Failed to finalize session record: {e}")
     logger.info("Hey DJ stopped.")
 
 

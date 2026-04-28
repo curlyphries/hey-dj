@@ -36,7 +36,6 @@ class DJOrchestrator:
         self.session_start: float = time.time()
         self.recent_ids: list = []
         self._running: bool = False
-        self._stream_queue: asyncio.Queue = asyncio.Queue(maxsize=4)
         self._ws_broadcast = None
         self._skip_event: asyncio.Event = asyncio.Event()
         self._paused: bool = False
@@ -93,6 +92,7 @@ class DJOrchestrator:
 
     async def _record_play(self, track: Track):
         today = time.strftime("%Y-%m-%d")
+        added_ms = int((track.duration_s or 0) * 1000)
         async with AsyncSessionLocal() as db:
             result = await db.execute(
                 select(DailyStat).where(
@@ -105,8 +105,7 @@ class DJOrchestrator:
                 stat = DailyStat(date=today, track_id=track.id, play_count=0, skip_count=0, total_ms=0)
                 db.add(stat)
             stat.play_count += 1
-            if track.duration_s:
-                stat.total_ms += int(track.duration_s * 1000)
+            stat.total_ms += added_ms
 
             track_result = await db.execute(select(Track).where(Track.id == track.id))
             t = track_result.scalar_one_or_none()
@@ -114,7 +113,41 @@ class DJOrchestrator:
                 t.play_count += 1
                 t.last_played = time.time()
 
+            session_result = await db.execute(
+                select(DJSession).where(DJSession.id == self.session_id)
+            )
+            session = session_result.scalar_one_or_none()
+            if session is not None:
+                session.tracks_played += 1
+                session.total_ms += added_ms
+                session.mood = self.mood
+                session.persona = self.persona
+
             await db.commit()
+
+    async def _start_session(self) -> None:
+        """Insert a row in the sessions table for this run."""
+        async with AsyncSessionLocal() as db:
+            db.add(DJSession(
+                id=self.session_id,
+                started_at=self.session_start,
+                mood=self.mood,
+                persona=self.persona,
+                tracks_played=0,
+                total_ms=0,
+            ))
+            await db.commit()
+
+    async def end_session(self) -> None:
+        """Finalize the current session row by setting ended_at."""
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(DJSession).where(DJSession.id == self.session_id)
+            )
+            session = result.scalar_one_or_none()
+            if session is not None and session.ended_at is None:
+                session.ended_at = time.time()
+                await db.commit()
 
     async def _generate_commentary(self, current: Track, next_track: Track, is_request: bool = False) -> Optional[bytes]:
         try:
@@ -296,16 +329,14 @@ class DJOrchestrator:
 
     async def run(self):
         self._running = True
-        await self._ensure_queue()
-        track = await queue_manager.pop()
-        while track is not None and self._running:
-            track = await self._play_track(track)
-
-    async def get_stream_chunk(self) -> Optional[bytes]:
+        await self._start_session()
         try:
-            return await asyncio.wait_for(self._stream_queue.get(), timeout=5.0)
-        except asyncio.TimeoutError:
-            return None
+            await self._ensure_queue()
+            track = await queue_manager.pop()
+            while track is not None and self._running:
+                track = await self._play_track(track)
+        finally:
+            await self.end_session()
 
     def set_mood(self, mood: str):
         self.mood = mood
