@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 import uuid
 import logging
@@ -8,14 +9,14 @@ from sqlalchemy import select
 
 from ..config import settings
 from ..db.database import AsyncSessionLocal
-from ..db.models import Track, Session as DJSession, DailyStat
+from ..db.models import Track, Session as DJSession, DailyStat, Request
 from ..llm import client as llm_client
 from ..llm.templates import (
     render_track_intro, render_request_ack,
     fallback_intro, fallback_request,
 )
 from ..tts.kokoro_tts import synthesize as tts_synthesize
-from ..audio.engine import build_transition, segment_to_mp3_bytes, wav_to_mp3_bytes, _load_segment, CHUNK_SIZE
+from ..audio.engine import wav_to_mp3_bytes
 from .queue_manager import queue_manager
 from .mood import pick_next_track
 
@@ -147,12 +148,13 @@ class DJOrchestrator:
             if not text:
                 text = fallback_intro(next_track.title or "Unknown", next_track.artist or "Unknown Artist")
 
-            return await asyncio.get_event_loop().run_in_executor(None, tts_synthesize, text)
+            return await asyncio.get_running_loop().run_in_executor(None, tts_synthesize, text)
         except Exception as e:
             logger.error(f"Commentary generation failed: {e}")
             return None
 
-    async def _play_track(self, track: Track):
+    async def _play_track(self, track: Track) -> Optional[Track]:
+        """Play one track. Returns the next track to play, or None when the queue is empty."""
         self.current_track = track
         await self._record_play(track)
         if track.id not in self.recent_ids:
@@ -171,18 +173,19 @@ class DJOrchestrator:
             "persona": self.persona,
         })
 
-        # Pre-build crossfade transition while track plays
         # Use duration from DB; fall back to file size estimate only if missing
         if track.duration_s:
             duration_s = track.duration_s
         else:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             try:
-                size = await loop.run_in_executor(None, lambda p=track.file_path: __import__('os').path.getsize(p))
+                size = await loop.run_in_executor(None, os.path.getsize, track.file_path)
                 duration_s = size / (192000 / 8)
             except Exception:
                 duration_s = 240  # safe fallback
-        prep_before_end = 45  # start LLM+TTS 45s before end; generation takes ~30s
+
+        # Start LLM+TTS ~45s before end; generation takes ~30s
+        prep_before_end = 45
         sleep_time = max(0, duration_s - prep_before_end)
         self._skip_event.clear()
         was_skipped = False
@@ -192,63 +195,56 @@ class DJOrchestrator:
         except asyncio.TimeoutError:
             pass
 
-        # Get next track
         await self._ensure_queue()
         next_track = await queue_manager.pop()
         if next_track is None:
-            return
+            return None
 
-        # Skip: signal commentary is incoming, generate TTS in background,
-        # then call _play_track immediately so current_track updates right away.
+        # Skip: signal commentary is incoming and generate TTS in background.
         if was_skipped:
-            self.transition_bytes = None                    # not ready yet
-            self.transition_for_track_id = next_track.id   # stream will wait for this
+            self._set_pending_transition(next_track.id, None)
             asyncio.create_task(self._fill_skip_commentary(next_track))
-            await self._play_track(next_track)
-            return
+            return next_track
 
-        is_request = False
-        async with AsyncSessionLocal() as db:
-            from ..db.models import Request
-            from sqlalchemy import select as sa_select
-            result = await db.execute(
-                sa_select(Request).where(
-                    Request.track_id == next_track.id,
-                    Request.acknowledged == False  # noqa
-                ).order_by(Request.requested_at).limit(1)
-            )
-            req = result.scalar_one_or_none()
-            if req:
-                is_request = True
-                req.acknowledged = True
-                req.acknowledged_at = time.time()
-                await db.commit()
+        is_request = await self._consume_request(next_track.id)
 
-        # Respect DJ enabled flag and frequency setting
         self._tracks_since_commentary += 1
         should_comment = (
             self.dj_enabled
             and self._tracks_since_commentary >= self.commentary_every_n
         )
 
-        # Generate commentary
-        commentary_wav = await self._generate_commentary(track, next_track, is_request=is_request) if should_comment else None
+        commentary_wav = (
+            await self._generate_commentary(track, next_track, is_request=is_request)
+            if should_comment else None
+        )
         if commentary_wav:
             self._tracks_since_commentary = 0
-
-        # Store just the commentary as MP3 — stream serves it between tracks
-        if commentary_wav:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             commentary_mp3 = await loop.run_in_executor(None, wav_to_mp3_bytes, commentary_wav)
-            self.transition_bytes = commentary_mp3
-            self.transition_for_track_id = next_track.id
+            self._set_pending_transition(next_track.id, commentary_mp3)
         else:
-            self.transition_bytes = None
-            self.transition_for_track_id = None
+            self._set_pending_transition(None, None)
 
-        # Queue the next_track itself
         self.next_track = next_track
-        await self._play_track(next_track)
+        return next_track
+
+    async def _consume_request(self, track_id: int) -> bool:
+        """Mark a pending request for the given track as acknowledged. Returns True if one existed."""
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(Request).where(
+                    Request.track_id == track_id,
+                    Request.acknowledged.is_(False),
+                ).order_by(Request.requested_at).limit(1)
+            )
+            req = result.scalar_one_or_none()
+            if req is None:
+                return False
+            req.acknowledged = True
+            req.acknowledged_at = time.time()
+            await db.commit()
+            return True
 
     async def _fill_skip_commentary(self, track: Track) -> None:
         """Generate fast fallback TTS for a skip; called as a background task."""
@@ -256,19 +252,54 @@ class DJOrchestrator:
             track.title or "Unknown",
             track.artist or "Unknown Artist",
         )
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         wav = await loop.run_in_executor(None, tts_synthesize, text)
-        if wav and self.transition_for_track_id == track.id:
-            mp3 = await loop.run_in_executor(None, wav_to_mp3_bytes, wav)
-            if mp3 and self.transition_for_track_id == track.id:
-                self.transition_bytes = mp3
+        if not wav or self.transition_for_track_id != track.id:
+            return
+        mp3 = await loop.run_in_executor(None, wav_to_mp3_bytes, wav)
+        if mp3 and self.transition_for_track_id == track.id:
+            self.transition_bytes = mp3
+
+    def _set_pending_transition(self, track_id: Optional[int], data: Optional[bytes]) -> None:
+        """Atomic set of the transition state (no awaits)."""
+        self.transition_for_track_id = track_id
+        self.transition_bytes = data
+
+    async def consume_transition_for(
+        self, track_id: int, skip_version: int, timeout: float = 2.0
+    ) -> Optional[bytes]:
+        """Wait briefly for a pending transition for `track_id`, then atomically read-and-clear it."""
+        if self.transition_for_track_id != track_id:
+            return None
+        step = 0.05
+        elapsed = 0.0
+        while self.transition_bytes is None and elapsed < timeout:
+            if self._skip_count != skip_version:
+                return None
+            await asyncio.sleep(step)
+            elapsed += step
+        if self.transition_bytes is None or self._skip_count != skip_version:
+            return None
+        data = self.transition_bytes
+        self.transition_bytes = None
+        self.transition_for_track_id = None
+        return data
+
+    def is_paused(self) -> bool:
+        return self._paused
+
+    async def wait_until_resumed(self) -> None:
+        await self._resume_event.wait()
+
+    def skip_version(self) -> int:
+        return self._skip_count
 
     async def run(self):
         self._running = True
         await self._ensure_queue()
-        first = await queue_manager.pop()
-        if first:
-            await self._play_track(first)
+        track = await queue_manager.pop()
+        while track is not None and self._running:
+            track = await self._play_track(track)
 
     async def get_stream_chunk(self) -> Optional[bytes]:
         try:

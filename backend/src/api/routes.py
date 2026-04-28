@@ -19,6 +19,7 @@ from ..library.scanner import scan_library
 from ..tts.kokoro_tts import synthesize as tts_synth, is_available as tts_available
 from ..llm.templates import PERSONA_MODIFIERS
 from ..llm.state import llm_state
+from ..audio.engine import _load_segment, segment_to_mp3_bytes
 from .websocket import hub
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,15 @@ CHUNK_SIZE = 4096   # 4 KB chunks
 _FALLBACK_SLEEP = CHUNK_SIZE / 24_000  # ~0.171 s
 
 
+async def _load_track_mp3(file_path: str) -> Optional[bytes]:
+    """Decode any supported audio file and return MP3-encoded bytes."""
+    loop = asyncio.get_running_loop()
+    seg = await loop.run_in_executor(None, _load_segment, file_path)
+    if seg is None:
+        return None
+    return await loop.run_in_executor(None, segment_to_mp3_bytes, seg)
+
+
 @router.get("/stream")
 async def audio_stream():
     async def generate():
@@ -125,7 +135,7 @@ async def audio_stream():
 
         while True:
             track = orchestrator.current_track
-            if track is None or orchestrator._paused:
+            if track is None or orchestrator.is_paused():
                 await asyncio.sleep(0.3)
                 continue
 
@@ -136,47 +146,30 @@ async def audio_stream():
 
             track_id = track.id
             file_path = track.file_path
-            skip_version = orchestrator._skip_count  # snapshot — changes on skip
+            track_format = (track.format or "").lower()
+            skip_version = orchestrator.skip_version()
 
             # ── DJ commentary ─────────────────────────────────────────────────
-            # transition_for_track_id is set immediately on skip as a "coming soon"
-            # signal. Wait up to 2s for the background TTS task to fill transition_bytes.
-            if orchestrator.transition_for_track_id == track_id:
-                elapsed = 0.0
-                while orchestrator.transition_bytes is None and elapsed < 2.0:
-                    if orchestrator._skip_count != skip_version:
-                        break
-                    await asyncio.sleep(0.05)
-                    elapsed += 0.05
-                if (orchestrator.transition_bytes
-                        and orchestrator._skip_count == skip_version):
-                    transition = orchestrator.transition_bytes
-                    orchestrator.transition_bytes = None
-                    orchestrator.transition_for_track_id = None
-                    yield transition
-                    await asyncio.sleep(0)
+            transition = await orchestrator.consume_transition_for(
+                track_id, skip_version, timeout=2.0
+            )
+            if transition is not None:
+                yield transition
+                await asyncio.sleep(0)
 
-            # ── Track file at exact realtime rate ─────────────────────────────
+            # ── Track audio at realtime rate ──────────────────────────────────
+            # MP3 files stream raw to avoid an unnecessary decode/re-encode.
+            # All other formats are transcoded to MP3 in memory so the
+            # `audio/mpeg` Content-Type stays accurate.
             try:
-                file_size = os.path.getsize(file_path)
-                dur = track.duration_s or 1
-                per_chunk_sleep = CHUNK_SIZE / max(file_size / dur, 100)
-            except Exception:
-                per_chunk_sleep = _FALLBACK_SLEEP
-
-            try:
-                with open(file_path, 'rb') as fh:
-                    while True:
-                        if orchestrator._paused:
-                            await orchestrator._resume_event.wait()
-                        if orchestrator._skip_count != skip_version:
-                            break   # skip fired — stop current file immediately
-                        chunk = fh.read(CHUNK_SIZE)
-                        if not chunk:
-                            break   # EOF — natural end of track
+                if track_format == "mp3":
+                    async for chunk in _stream_mp3_file(track, file_path, skip_version):
                         yield chunk
-                        await asyncio.sleep(per_chunk_sleep)
-            except Exception:
+                else:
+                    async for chunk in _stream_transcoded(track, file_path, skip_version):
+                        yield chunk
+            except Exception as e:
+                logger.warning(f"Stream error on track {track_id} ({file_path}): {e}")
                 await asyncio.sleep(1)
 
             last_served_id = track_id
@@ -186,6 +179,44 @@ async def audio_stream():
         media_type="audio/mpeg",
         headers={"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"},
     )
+
+
+async def _stream_mp3_file(track: Track, file_path: str, skip_version: int):
+    try:
+        file_size = os.path.getsize(file_path)
+        dur = track.duration_s or 1
+        per_chunk_sleep = CHUNK_SIZE / max(file_size / dur, 100)
+    except OSError:
+        per_chunk_sleep = _FALLBACK_SLEEP
+
+    with open(file_path, 'rb') as fh:
+        while True:
+            if orchestrator.is_paused():
+                await orchestrator.wait_until_resumed()
+            if orchestrator.skip_version() != skip_version:
+                return
+            chunk = fh.read(CHUNK_SIZE)
+            if not chunk:
+                return
+            yield chunk
+            await asyncio.sleep(per_chunk_sleep)
+
+
+async def _stream_transcoded(track: Track, file_path: str, skip_version: int):
+    mp3_bytes = await _load_track_mp3(file_path)
+    if not mp3_bytes:
+        return
+
+    dur = track.duration_s or 1
+    per_chunk_sleep = CHUNK_SIZE / max(len(mp3_bytes) / dur, 100)
+
+    for i in range(0, len(mp3_bytes), CHUNK_SIZE):
+        if orchestrator.is_paused():
+            await orchestrator.wait_until_resumed()
+        if orchestrator.skip_version() != skip_version:
+            return
+        yield mp3_bytes[i:i + CHUNK_SIZE]
+        await asyncio.sleep(per_chunk_sleep)
 
 
 # ─── Playback ─────────────────────────────────────────────────────────────────
