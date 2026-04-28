@@ -16,6 +16,11 @@ export const api = {
     resume: () => req('/api/playback/resume', { method: 'POST' }),
   },
 
+  tracks: {
+    artUrl: (id: number) => `/api/tracks/${id}/art`,
+    lyrics: (id: number) => req<{ lyrics: string; source: string }>(`/api/tracks/${id}/lyrics`),
+  },
+
   library: {
     list: (page = 1, genre?: string, artist?: string, album?: string) => {
       const p = new URLSearchParams({ page: String(page), page_size: '50' })
@@ -79,8 +84,8 @@ export const api = {
   },
 
   dj: {
-    settings: () => req<{ enabled: boolean; every_n: number; user_prompt: string }>('/api/dj/settings'),
-    update: (s: { enabled: boolean; every_n: number; user_prompt: string }) =>
+    settings: () => req<{ enabled: boolean; every_n: number; user_prompt: string; intro_style: string }>('/api/dj/settings'),
+    update: (s: { enabled: boolean; every_n: number; user_prompt: string; intro_style?: string }) =>
       req('/api/dj/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

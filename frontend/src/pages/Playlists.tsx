@@ -77,11 +77,13 @@ export default function Playlists() {
     if (!name) return
     try {
       const pl = await api.playlists.create(name)
-      setPlaylists(prev => [...prev, { ...pl, created_at: Date.now() / 1000 }].sort((a, b) => a.name.localeCompare(b.name)))
+      await loadPlaylists()
       setNewName('')
       setCreating(false)
       showToast(`Playlist "${pl.name}" created`)
+      selectPlaylist(pl.id, pl.name)
     } catch {
+      await loadPlaylists()
       showToast('A playlist with that name already exists')
     }
   }

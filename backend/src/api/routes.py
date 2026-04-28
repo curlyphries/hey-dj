@@ -12,6 +12,8 @@ from sqlalchemy import select, func, desc
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import httpx
+
 from ..config import settings
 from ..db.database import get_db
 from ..db.models import Track, QueueEntry, Request, Playlist, PlaylistTrack, Session as DJSession, DailyStat
@@ -417,6 +419,7 @@ class DJSettingsBody(BaseModel):
     enabled: bool
     every_n: int
     user_prompt: str
+    intro_style: str = "classic"
 
 
 @router.get("/api/dj/settings")
@@ -426,7 +429,7 @@ async def get_dj_settings():
 
 @router.post("/api/dj/settings")
 async def update_dj_settings(body: DJSettingsBody):
-    orchestrator.set_dj_settings(body.enabled, body.every_n, body.user_prompt)
+    orchestrator.set_dj_settings(body.enabled, body.every_n, body.user_prompt, body.intro_style)
     await hub.broadcast({"type": "dj_settings_change", "payload": orchestrator.get_dj_settings()})
     return {"ok": True}
 
@@ -702,3 +705,153 @@ def _track_dict(t: Track) -> dict:
         "skip_count": t.skip_count,
         "last_played": t.last_played,
     }
+
+
+# ─── Album Art ────────────────────────────────────────────────────────────────
+
+def _extract_art_from_file(file_path: str) -> Optional[tuple[bytes, str]]:
+    """Return (image_bytes, mime_type) from embedded tags, or None."""
+    try:
+        from mutagen.id3 import ID3, ID3NoHeaderError
+        tags = ID3(file_path)
+        frames = tags.getall("APIC")
+        if frames:
+            f = frames[0]
+            return f.data, f.mime or "image/jpeg"
+    except Exception:
+        pass
+    try:
+        from mutagen.mp4 import MP4
+        tags = MP4(file_path)
+        covr = tags.get("covr")
+        if covr:
+            from mutagen.mp4 import MP4Cover
+            img = covr[0]
+            mime = "image/jpeg" if img.imageformat == MP4Cover.FORMAT_JPEG else "image/png"
+            return bytes(img), mime
+    except Exception:
+        pass
+    try:
+        from mutagen.flac import FLAC
+        tags = FLAC(file_path)
+        pics = tags.pictures
+        if pics:
+            return pics[0].data, pics[0].mime or "image/jpeg"
+    except Exception:
+        pass
+    return None
+
+
+async def _fetch_musicbrainz_art(artist: str, title: str, album: Optional[str]) -> Optional[bytes]:
+    """Try MusicBrainz Cover Art Archive as a fallback (no API key required).
+
+    Strategy:
+    1. Search for a release by artist+title (most reliable for any collection).
+    2. If that yields nothing, try artist+album.
+    """
+    async def _art_for_mbid(client: httpx.AsyncClient, mbid: str) -> Optional[bytes]:
+        try:
+            r = await client.get(
+                f"https://coverartarchive.org/release/{mbid}/front-250",
+                follow_redirects=True,
+                timeout=8.0,
+            )
+            if r.status_code == 200:
+                return r.content
+        except Exception:
+            pass
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            headers = {"User-Agent": "HeyDJ/2.0 (local-dj-app)"}
+
+            # Try 1: search recording by artist + title → find associated release
+            r1 = await client.get(
+                "https://musicbrainz.org/ws/2/recording",
+                params={"query": f'artist:"{artist}" AND recording:"{title}"', "limit": 3, "fmt": "json"},
+                headers=headers,
+            )
+            if r1.status_code == 200:
+                for rec in r1.json().get("recordings", []):
+                    for release in rec.get("releases", []):
+                        mbid = release.get("id")
+                        if mbid:
+                            art = await _art_for_mbid(client, mbid)
+                            if art:
+                                return art
+
+            # Try 2: search release by artist + album name
+            if album:
+                r2 = await client.get(
+                    "https://musicbrainz.org/ws/2/release",
+                    params={"query": f'artist:"{artist}" AND release:"{album}"', "limit": 1, "fmt": "json"},
+                    headers=headers,
+                )
+                if r2.status_code == 200:
+                    releases = r2.json().get("releases", [])
+                    if releases:
+                        art = await _art_for_mbid(client, releases[0]["id"])
+                        if art:
+                            return art
+    except Exception:
+        pass
+    return None
+
+
+@router.get("/api/tracks/{track_id}/art")
+async def track_art(track_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Track).where(Track.id == track_id))
+    track = result.scalar_one_or_none()
+    if track is None:
+        raise HTTPException(404, "Track not found")
+
+    loop = asyncio.get_running_loop()
+    art = await loop.run_in_executor(None, _extract_art_from_file, track.file_path)
+    if art:
+        data, mime = art
+        return StreamingResponse(
+            iter([data]),
+            media_type=mime,
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
+    mb_data = await _fetch_musicbrainz_art(
+        track.artist or "", track.title or "", track.album
+    )
+    if mb_data:
+        return StreamingResponse(
+            iter([mb_data]),
+            media_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
+    raise HTTPException(404, "No art available")
+
+
+# ─── Lyrics ───────────────────────────────────────────────────────────────────
+
+@router.get("/api/tracks/{track_id}/lyrics")
+async def track_lyrics(track_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Track).where(Track.id == track_id))
+    track = result.scalar_one_or_none()
+    if track is None:
+        raise HTTPException(404, "Track not found")
+    if not track.artist or not track.title:
+        raise HTTPException(404, "Track missing artist or title metadata")
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(
+                f"https://api.lyrics.ovh/v1/{track.artist}/{track.title}",
+                follow_redirects=True,
+            )
+        if resp.status_code == 200:
+            data = resp.json()
+            lyrics = data.get("lyrics", "").strip()
+            if lyrics:
+                return {"lyrics": lyrics, "source": "lyrics.ovh"}
+    except Exception:
+        pass
+
+    raise HTTPException(404, "Lyrics not found")

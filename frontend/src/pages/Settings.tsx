@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { RefreshCw, CheckCircle, XCircle, Server, Mic2, Zap, Moon, Coffee, Brain, Sun, Cpu, Eye, EyeOff, Code2, Copy, Check } from 'lucide-react'
+import { RefreshCw, CheckCircle, XCircle, Server, Mic2, Zap, Moon, Coffee, Brain, Sun, Cpu, Eye, EyeOff, Code2, Copy, Check, Music2, User, Waves, Radio } from 'lucide-react'
 import { api } from '../services/api'
+import { useDJStore } from '../store'
+
+const MOODS = ['chill', 'hype', 'focus', 'party', 'latenight', 'morning']
+const PERSONAS = ['smooth', 'hype', 'latenight']
 
 const PRESETS = [
   {
@@ -59,6 +63,33 @@ const PRESETS = [
   },
 ]
 
+const INTRO_STYLES = [
+  {
+    id: 'genre',
+    label: 'Genre Lead',
+    icon: <Music2 size={14} />,
+    desc: 'Sets the scene with the genre or era first before naming the track',
+  },
+  {
+    id: 'artist',
+    label: 'Artist Lead',
+    icon: <User size={14} />,
+    desc: 'Celebrates the artist first — a quick fact or reputation drop',
+  },
+  {
+    id: 'vibe',
+    label: 'Vibe Lead',
+    icon: <Waves size={14} />,
+    desc: 'Paints the emotional feeling first, then reveals the track',
+  },
+  {
+    id: 'classic',
+    label: 'Classic Radio',
+    icon: <Radio size={14} />,
+    desc: 'Clean segue from the last track, confident name drop',
+  },
+]
+
 const FREQ_OPTIONS = [
   { value: 1, label: 'Every song' },
   { value: 2, label: 'Every 2nd' },
@@ -67,6 +98,7 @@ const FREQ_OPTIONS = [
 ]
 
 export default function Settings() {
+  const { mood, persona, setMood, setPersona } = useDJStore()
   const [health, setHealth] = useState<{ status: string; tts: boolean; llm: boolean; ws_clients: number } | null>(null)
   const [scanning, setScanning] = useState(false)
   const [scanResult, setScanResult] = useState<{ added: number; updated: number; removed: number } | null>(null)
@@ -82,6 +114,7 @@ export default function Settings() {
   const [djEnabled, setDjEnabled] = useState(true)
   const [everyN, setEveryN] = useState(1)
   const [userPrompt, setUserPrompt] = useState('')
+  const [introStyle, setIntroStyle] = useState('classic')
   const [saved, setSaved] = useState(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -97,6 +130,11 @@ export default function Settings() {
       setDjEnabled(s.enabled)
       setEveryN(s.every_n)
       setUserPrompt(s.user_prompt || '')
+      setIntroStyle(s.intro_style || 'classic')
+    }).catch(() => {})
+    api.playback.state().then((s: any) => {
+      if (s.mood) setMood(s.mood)
+      if (s.persona) setPersona(s.persona)
     }).catch(() => {})
   }, [])
 
@@ -135,10 +173,10 @@ export default function Settings() {
     persistLlm(llmMode, llmUrl, llmModel, v)
   }
 
-  const persist = useCallback((enabled: boolean, n: number, prompt: string) => {
+  const persist = useCallback((enabled: boolean, n: number, prompt: string, style: string) => {
     if (saveTimer.current) clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(async () => {
-      await api.dj.update({ enabled, every_n: n, user_prompt: prompt }).catch(() => {})
+      await api.dj.update({ enabled, every_n: n, user_prompt: prompt, intro_style: style }).catch(() => {})
       setSaved(true)
       setTimeout(() => setSaved(false), 1500)
     }, 400)
@@ -147,23 +185,40 @@ export default function Settings() {
   const handleToggle = () => {
     const v = !djEnabled
     setDjEnabled(v)
-    persist(v, everyN, userPrompt)
+    persist(v, everyN, userPrompt, introStyle)
   }
 
   const handleFreq = (n: number) => {
     setEveryN(n)
-    persist(djEnabled, n, userPrompt)
+    persist(djEnabled, n, userPrompt, introStyle)
   }
 
   const handlePrompt = (v: string) => {
     setUserPrompt(v)
-    persist(djEnabled, everyN, v)
+    persist(djEnabled, everyN, v, introStyle)
+  }
+
+  const handleIntroStyle = (s: string) => {
+    setIntroStyle(s)
+    persist(djEnabled, everyN, userPrompt, s)
+  }
+
+  const handleMood = async (m: string) => {
+    setMood(m)
+    await api.mood.set(m).catch(() => {})
+  }
+
+  const handlePersona = async (p: string) => {
+    setPersona(p)
+    await api.personas.select(p).catch(() => {})
   }
 
   const applyPreset = async (p: typeof PRESETS[0]) => {
     setUserPrompt(p.prompt)
     setDjEnabled(true)
     setEveryN(1)
+    setMood(p.mood)
+    setPersona(p.persona)
     await Promise.all([
       api.personas.select(p.persona).catch(() => {}),
       api.mood.set(p.mood).catch(() => {}),
@@ -225,6 +280,58 @@ export default function Settings() {
               <span className="text-accent-light">{p.icon}</span>
               <span className="text-xs font-medium">{p.label}</span>
               <span className="text-[10px] text-slate-500 leading-tight">{p.desc}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Mood */}
+        <p className="text-xs text-slate-400 mb-2 font-medium uppercase tracking-wide">Mood</p>
+        <div className="flex flex-wrap gap-2 mb-4">
+          {MOODS.map(m => (
+            <button
+              key={m}
+              onClick={() => handleMood(m)}
+              className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors capitalize
+                ${mood === m ? 'bg-accent text-white' : 'bg-surface-3 text-slate-400 hover:text-slate-100 hover:bg-surface-3/80'}`}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+
+        {/* DJ Persona */}
+        <p className="text-xs text-slate-400 mb-2 font-medium uppercase tracking-wide">DJ Persona</p>
+        <div className="flex gap-2 mb-4">
+          {PERSONAS.map(p => (
+            <button
+              key={p}
+              onClick={() => handlePersona(p)}
+              className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-colors capitalize
+                ${persona === p ? 'bg-beat text-white' : 'bg-surface-3 text-slate-400 hover:bg-surface-3/80'}`}
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+
+        {/* Intro Style */}
+        <p className="text-xs text-slate-400 mb-2 font-medium uppercase tracking-wide">Intro Style</p>
+        <div className="grid grid-cols-2 gap-2 mb-4">
+          {INTRO_STYLES.map(s => (
+            <button
+              key={s.id}
+              onClick={() => handleIntroStyle(s.id)}
+              className={`flex items-start gap-2.5 p-2.5 rounded-lg text-left transition-colors
+                ${ introStyle === s.id
+                  ? 'bg-accent/20 ring-1 ring-accent/50 text-accent-light'
+                  : 'bg-surface-3 text-slate-400 hover:bg-accent/10 hover:text-slate-200'
+                }`}
+            >
+              <span className="mt-0.5 shrink-0">{s.icon}</span>
+              <span>
+                <span className="block text-xs font-semibold leading-tight">{s.label}</span>
+                <span className="block text-[10px] text-slate-500 leading-tight mt-0.5">{s.desc}</span>
+              </span>
             </button>
           ))}
         </div>
