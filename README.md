@@ -22,7 +22,9 @@ The DJ picks songs based on mood, generates natural commentary between tracks us
 - 📺 **Embeddable widget** — compact `<iframe>` player for any website, configurable size and backend URL
 - 📱 **PWA** — installable on Android via Chrome "Add to Home Screen"
 - 📊 Listener stats & session history
-- 🔄 Real-time sync across multiple browser tabs/devices via WebSocket
+- �️ **Album art** — displays embedded cover art from your files; falls back to MusicBrainz Cover Art Archive automatically (no API key)
+- 📝 **Lyrics** — collapsible lyrics panel on Now Playing, fetched live from lyrics.ovh (free, no key)
+- �🔄 Real-time sync across multiple browser tabs/devices via WebSocket
 
 ---
 
@@ -187,6 +189,7 @@ Go to **Settings** in the app. From there you can:
 - **Toggle the DJ on/off** without restarting
 - **Set frequency** — every song, every 2nd, 3rd, or 5th track
 - **Apply a preset** (Smooth, Hype, Late Night, Morning, Focus, Café) — sets persona + mood + style instructions in one tap
+- **Choose intro style** — Classic (tight radio segue), Artist-led, Genre-led, or Vibe/feeling-led
 - **Write custom instructions** that are injected directly into the LLM prompt, e.g.:
   - *"Tell me one interesting fact about the artist every time"*
   - *"Only play 90s R&B tonight and keep commentary short"*
@@ -241,9 +244,15 @@ The app opens full-screen with no browser chrome, indistinguishable from a nativ
 | `POST` | `/api/playback/pause` | Pause playback |
 | `POST` | `/api/playback/resume` | Resume playback |
 
+### Tracks
+| Method | Endpoint | Description |
+|--------|----------|--------------|
+| `GET` | `/api/tracks/{id}/art` | Album art image (embedded tags → MusicBrainz fallback) |
+| `GET` | `/api/tracks/{id}/lyrics` | `{ lyrics, source }` from lyrics.ovh |
+
 ### Library
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+|--------|----------|--------------|
 | `GET` | `/api/library` | Track list — `?page=&page_size=&genre=&artist=&album=` |
 | `GET` | `/api/library/search?q=` | Full-text search across title, artist, album |
 | `GET` | `/api/library/genres` | Genre list with track counts |
@@ -277,7 +286,7 @@ The app opens full-screen with no browser chrome, indistinguishable from a nativ
 | `GET` | `/api/personas` | List available personas |
 | `POST` | `/api/personas/select` | `{ persona }` — set current persona |
 | `GET` | `/api/dj/settings` | Get DJ settings |
-| `POST` | `/api/dj/settings` | `{ enabled, every_n, user_prompt }` |
+| `POST` | `/api/dj/settings` | `{ enabled, every_n, user_prompt, intro_style? }` |
 | `GET` | `/api/llm/settings` | Get runtime LLM config |
 | `POST` | `/api/llm/settings` | `{ url, model, api_key, use_openai_compat }` |
 
@@ -344,8 +353,8 @@ curl http://localhost:8000/api/health
 # Is Ollama up?
 curl http://localhost:11434/api/tags
 
-# Check backend logs
-tail -f /tmp/aidj-backend.log
+# Check backend logs (adjust path to wherever you started the server)
+tail -f /tmp/heydj.log
 
 # Rescan music library
 curl -X POST http://localhost:8000/api/library/scan
@@ -444,7 +453,7 @@ Yes — edit `backend/src/llm/templates.py` directly. `PERSONA_MODIFIERS` is a p
 ---
 
 **The stream restarts every time I skip — is that normal?**
-Yes, by design. Skipping reconnects the audio stream so the browser picks up the new track + DJ commentary immediately. The reconnect is ~300ms and should be seamless.
+Yes, by design. Skipping sends a signal to the backend, then the frontend polls until the backend confirms the next track is playing before reconnecting the audio stream. This ensures you always hear the new track rather than the tail of the previous one. The reconnect is typically under a second and should be seamless.
 
 ---
 
