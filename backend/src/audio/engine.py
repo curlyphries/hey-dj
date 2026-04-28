@@ -112,7 +112,7 @@ def wav_to_mp3_bytes(wav_bytes: bytes) -> Optional[bytes]:
 
 
 async def stream_track(file_path: str) -> AsyncIterator[bytes]:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     seg = await loop.run_in_executor(None, _load_segment, file_path)
     if seg is None:
         return
@@ -129,7 +129,7 @@ async def stream_transition(
     commentary_wav: Optional[bytes],
     crossfade_ms: int,
 ) -> AsyncIterator[bytes]:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     transition = await loop.run_in_executor(
         None, build_transition, current_path, next_path, commentary_wav, crossfade_ms, 8000
     )

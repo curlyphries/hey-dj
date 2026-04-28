@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
         await scan_library(db)
 
     # Start file watcher
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     start_watcher(loop, _file_change_callback)
 
     # Wire WebSocket broadcast into orchestrator

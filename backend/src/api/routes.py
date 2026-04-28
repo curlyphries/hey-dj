@@ -646,8 +646,7 @@ class TTSPreviewBody(BaseModel):
 async def tts_preview(body: TTSPreviewBody):
     if not tts_available():
         raise HTTPException(503, "Kokoro TTS not available")
-    loop = asyncio.get_event_loop()
-    wav = await loop.run_in_executor(None, tts_synth, body.text)
+    wav = await asyncio.get_running_loop().run_in_executor(None, tts_synth, body.text)
     if wav is None:
         raise HTTPException(500, "TTS synthesis failed")
     return StreamingResponse(iter([wav]), media_type="audio/wav")

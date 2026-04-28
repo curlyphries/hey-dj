@@ -40,10 +40,12 @@ class QueueManager:
     async def insert_next(self, track_id: int, source: str = "request", session_id: str = "") -> QueueEntry:
         async with self._lock:
             async with AsyncSessionLocal() as db:
-                # Get current minimum position (currently playing)
+                # Insert below the current minimum so this track plays next.
+                # Using min - 1 keeps positions as integers and handles
+                # multiple consecutive inserts correctly (each one goes lower).
                 result = await db.execute(select(func.min(QueueEntry.position)))
                 min_pos = result.scalar() or 0
-                insert_at = min_pos + 0.5
+                insert_at = min_pos - 1
 
                 entry = QueueEntry(
                     track_id=track_id,
