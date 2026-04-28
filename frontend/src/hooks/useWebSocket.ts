@@ -2,7 +2,13 @@ import { useEffect, useRef } from 'react'
 import { useDJStore } from '../store'
 import { audioRef } from '../components/Layout'
 
-const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
+// Connect directly to the backend — bypasses Vite's WS proxy which is
+// unreliable when the page is served through a secondary proxy (e.g. Windsurf preview).
+// For production the backend serves the frontend itself so location.host is correct.
+const BACKEND_PORT = 8010
+const WS_URL = import.meta.env.DEV
+  ? `ws://${location.hostname}:${BACKEND_PORT}/ws`
+  : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
 
 export function useWebSocket() {
   const ws = useRef<WebSocket | null>(null)

@@ -1,0 +1,19 @@
+[Unit]
+Description=Hey DJ — Local AI Radio DJ
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=curlyphries
+WorkingDirectory=/home/curlyphries/CascadeProjects/personal-fun/ai-dj-v2/backend
+ExecStartPre=/bin/sleep 3
+ExecStart=/home/curlyphries/CascadeProjects/personal-fun/ai-dj-v2/backend/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hey-dj
+
+[Install]
+WantedBy=multi-user.target

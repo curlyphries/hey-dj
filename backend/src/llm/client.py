@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import httpx
 from .state import llm_state
@@ -14,37 +15,40 @@ async def generate(prompt: str) -> str:
     if llm_state.api_key:
         headers["Authorization"] = f"Bearer {llm_state.api_key}"
 
-    try:
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            if llm_state.use_openai_compat:
-                resp = await client.post(
-                    f"{url}/v1/chat/completions",
-                    headers=headers,
-                    json={
-                        "model": model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0.85,
-                        "max_tokens": 120,
-                    },
-                )
-                resp.raise_for_status()
-                return resp.json()["choices"][0]["message"]["content"].strip()
-            else:
-                resp = await client.post(
-                    f"{url}/api/generate",
-                    headers=headers,
-                    json={
-                        "model": model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"temperature": 0.85, "num_predict": 120},
-                    },
-                )
-                resp.raise_for_status()
-                return resp.json().get("response", "").strip()
-    except Exception as e:
-        logger.warning(f"LLM request failed: {e}")
-        return ""
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+                if llm_state.use_openai_compat:
+                    resp = await client.post(
+                        f"{url}/v1/chat/completions",
+                        headers=headers,
+                        json={
+                            "model": model,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "temperature": 0.85,
+                            "max_tokens": 120,
+                        },
+                    )
+                    resp.raise_for_status()
+                    return resp.json()["choices"][0]["message"]["content"].strip()
+                else:
+                    resp = await client.post(
+                        f"{url}/api/generate",
+                        headers=headers,
+                        json={
+                            "model": model,
+                            "prompt": prompt,
+                            "stream": False,
+                            "options": {"temperature": 0.85, "num_predict": 120},
+                        },
+                    )
+                    resp.raise_for_status()
+                    return resp.json().get("response", "").strip()
+        except Exception as e:
+            logger.warning(f"LLM request failed (attempt {attempt + 1}/3): {e}")
+            if attempt < 2:
+                await asyncio.sleep(1)
+    return ""
 
 
 async def is_available() -> bool:

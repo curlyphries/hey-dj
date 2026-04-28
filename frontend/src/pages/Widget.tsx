@@ -17,11 +17,16 @@ export default function Widget() {
   const size = getParam('size', 'standard') as 'mini' | 'standard' | 'full'
   const label = getParam('label', 'Hey DJ')
 
+  const devBackend = `${location.hostname}:8010`
   const wsBase = backendOrigin
     ? backendOrigin.replace(/^http/, 'ws')
-    : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`
-  const streamUrl = backendOrigin ? `${backendOrigin}/stream` : '/stream'
-  const apiBase = backendOrigin || ''
+    : import.meta.env.DEV
+      ? `ws://${devBackend}`
+      : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`
+  const streamUrl = backendOrigin
+    ? `${backendOrigin}/stream`
+    : import.meta.env.DEV ? `http://${devBackend}/stream` : '/stream'
+  const apiBase = backendOrigin || (import.meta.env.DEV ? `http://${devBackend}` : '')
 
   const [track, setTrack] = useState<TrackInfo | null>(null)
   const [connected, setConnected] = useState(false)

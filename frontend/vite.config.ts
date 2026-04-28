@@ -25,21 +25,19 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
-        runtimeCaching: [
-          {
-            urlPattern: /^https?:\/\/.*\/api\/.*/i,
-            handler: 'NetworkFirst',
-            options: { cacheName: 'api-cache', networkTimeoutSeconds: 5 },
-          },
-        ],
+        navigateFallback: 'index.html',
+        navigateFallbackDenylist: [/^\/api/, /^\/stream/, /^\/ws/],
+        runtimeCaching: [],
       },
     }),
   ],
   server: {
+    strictPort: true,
+    hmr: { path: '/__vite_hmr' },
     proxy: {
-      '/api': 'http://localhost:8001',
-      '/stream': 'http://localhost:8001',
-      '/ws': { target: 'ws://localhost:8001', ws: true },
+      '/api': 'http://localhost:8010',
+      '/stream': 'http://localhost:8010',
+      '/ws': { target: 'ws://localhost:8010', ws: true },
     },
   },
 })

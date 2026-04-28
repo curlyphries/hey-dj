@@ -47,22 +47,25 @@ class DJOrchestrator:
         self.dj_enabled: bool = True
         self.commentary_every_n: int = 1
         self.dj_user_prompt: str = ""
+        self.intro_style: str = "classic"
         self._tracks_since_commentary: int = 0
 
     def skip(self):
         self._skip_count += 1
         self._skip_event.set()
 
-    def set_dj_settings(self, enabled: bool, every_n: int, user_prompt: str) -> None:
+    def set_dj_settings(self, enabled: bool, every_n: int, user_prompt: str, intro_style: str = "classic") -> None:
         self.dj_enabled = enabled
         self.commentary_every_n = max(1, every_n)
         self.dj_user_prompt = user_prompt
+        self.intro_style = intro_style
 
     def get_dj_settings(self) -> dict:
         return {
             "enabled": self.dj_enabled,
             "every_n": self.commentary_every_n,
             "user_prompt": self.dj_user_prompt,
+            "intro_style": self.intro_style,
         }
 
     def pause(self):
@@ -166,6 +169,7 @@ class DJOrchestrator:
                     persona=self.persona,
                     mood=self.mood,
                     user_instructions=self.dj_user_prompt,
+                    intro_style=self.intro_style,
                 )
 
             ollama_ok = await llm_client.is_available()
@@ -279,11 +283,12 @@ class DJOrchestrator:
             await db.commit()
             return True
 
-    async def _fill_skip_commentary(self, track: Track) -> None:
+    async def _fill_skip_commentary(self, track: Track, prev_artist: str = None) -> None:
         """Generate fast fallback TTS for a skip; called as a background task."""
         text = fallback_intro(
             track.title or "Unknown",
             track.artist or "Unknown Artist",
+            prev_artist=prev_artist or "the last artist",
         )
         loop = asyncio.get_running_loop()
         wav = await loop.run_in_executor(None, tts_synthesize, text)

@@ -27,9 +27,9 @@ export default function Layout() {
   useEffect(() => {
     audioRef.current = ref.current
     if (ref.current) {
-      ref.current.muted = true   // muted autoplay is permitted by all browsers
+      ref.current.muted = true
       ref.current.src = '/stream'
-      ref.current.play().catch(() => {})
+      // Do NOT call play() here — user must press Play explicitly
     }
   }, [])
 
@@ -37,14 +37,6 @@ export default function Layout() {
   useEffect(() => {
     if (ref.current) ref.current.muted = isMuted
   }, [isMuted])
-
-  // When the first track appears after a cold start, kick off playback
-  // (handles the case where autoplay fired before the orchestrator had a track)
-  useEffect(() => {
-    const audio = ref.current
-    if (!audio || !currentTrack?.id) return
-    if (audio.paused) audio.play().catch(() => {})
-  }, [currentTrack?.id === undefined ? null : 'ready'])
 
   return (
     <div className="flex flex-col h-screen bg-surface text-slate-100 md:flex-row">
