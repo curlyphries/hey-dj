@@ -22,9 +22,10 @@ The DJ picks songs based on mood, generates natural commentary between tracks us
 - 📺 **Embeddable widget** — compact `<iframe>` player for any website, configurable size and backend URL
 - 📱 **PWA** — installable on Android via Chrome "Add to Home Screen"
 - 📊 Listener stats & session history
-- �️ **Album art** — displays embedded cover art from your files; falls back to MusicBrainz Cover Art Archive automatically (no API key)
-- 📝 **Lyrics** — collapsible lyrics panel on Now Playing, fetched live from lyrics.ovh (free, no key)
-- �🔄 Real-time sync across multiple browser tabs/devices via WebSocket
+- 🖼️ **Album art** — displays embedded cover art from your files; falls back to MusicBrainz Cover Art Archive automatically (no API key)
+- 📝 **Lyrics** — auto-displayed on Now Playing; dual-source lookup: lyrics.ovh → LRCLIB fallback for multilingual & obscure tracks (both free, no API key)
+- 🎶 **Audio visualizer** — live frequency bars or waveform synced to the stream
+- � Real-time sync across multiple browser tabs/devices via WebSocket
 
 ---
 
@@ -248,7 +249,7 @@ The app opens full-screen with no browser chrome, indistinguishable from a nativ
 | Method | Endpoint | Description |
 |--------|----------|--------------|
 | `GET` | `/api/tracks/{id}/art` | Album art image (embedded tags → MusicBrainz fallback) |
-| `GET` | `/api/tracks/{id}/lyrics` | `{ lyrics, source }` from lyrics.ovh |
+| `GET` | `/api/tracks/{id}/lyrics` | `{ lyrics, source }` — lyrics.ovh with LRCLIB fallback |
 
 ### Library
 | Method | Endpoint | Description |

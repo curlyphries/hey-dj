@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 
 export type VisualizerMode = 'bars' | 'waveform'
 
@@ -12,9 +12,16 @@ export function useVisualizer(
   const analyserRef = useRef<AnalyserNode | null>(null)
   const ctxRef = useRef<AudioContext | null>(null)
   const sourceRef = useRef<MediaElementAudioSourceNode | null>(null)
+  // Tracks whether the analyser has been wired — triggers the draw effect to rerun
+  const [ready, setReady] = useState(false)
 
   const setup = useCallback(() => {
-    if (!audioRef.current || ctxRef.current) return
+    if (!audioRef.current) return
+    // Resume if context exists but was suspended (browser autoplay policy)
+    if (ctxRef.current) {
+      if (ctxRef.current.state === 'suspended') ctxRef.current.resume()
+      return
+    }
     try {
       const ctx = new AudioContext()
       const analyser = ctx.createAnalyser()
@@ -25,11 +32,12 @@ export function useVisualizer(
       ctxRef.current = ctx
       analyserRef.current = analyser
       sourceRef.current = source
+      setReady(true)
     } catch (_) {}
   }, [audioRef])
 
   useEffect(() => {
-    if (!active || !canvasRef.current || !analyserRef.current) return
+    if (!active || !ready || !canvasRef.current || !analyserRef.current) return
 
     const canvas = canvasRef.current
     const ctx = canvas.getContext('2d')!
@@ -74,7 +82,7 @@ export function useVisualizer(
 
     draw()
     return () => cancelAnimationFrame(animRef.current)
-  }, [active, mode, canvasRef, analyserRef])
+  }, [active, ready, mode, canvasRef])
 
   return { setup }
 }

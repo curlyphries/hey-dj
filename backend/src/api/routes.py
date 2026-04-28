@@ -1,9 +1,11 @@
 import asyncio
 import hmac
 import os
+import re
 import time
 import logging
 from typing import Optional, List
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import StreamingResponse
@@ -840,17 +842,67 @@ async def track_lyrics(track_id: int, db: AsyncSession = Depends(get_db)):
     if not track.artist or not track.title:
         raise HTTPException(404, "Track missing artist or title metadata")
 
+    def _sanitise(s: str) -> str:
+        """Strip apostrophes/backticks that break URL matching."""
+        return re.sub(r"[''`]", "", s).strip()
+
+    def _strip_title_tags(s: str) -> str:
+        """Remove trailing metadata tags like [Explicit], (Remastered 2011), (Live), etc."""
+        return re.sub(r"[\[(][^\]\)]*(?:explicit|remaster|live|remix|edit|version|feat\.|ft\.)[^\]\)]*[\])]", "", s, flags=re.IGNORECASE).strip()
+
+    def _normalise_artist(s: str) -> str:
+        """Collapse internal spaces and lowercase — handles '10 CC' → '10cc'."""
+        return re.sub(r"\s+", "", s).lower()
+
+    artist_clean = _sanitise(track.artist)
+    title_clean = _strip_title_tags(_sanitise(track.title))
+
+    # lyrics.ovh: try original artist name, then space-collapsed variant
+    artist_variants = [artist_clean]
+    normalised = _normalise_artist(artist_clean)
+    if normalised != artist_clean.lower():
+        artist_variants.append(normalised)
+
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
+            for artist_v in artist_variants:
+                resp = await client.get(
+                    f"https://api.lyrics.ovh/v1/{quote(artist_v)}/{quote(title_clean)}",
+                    follow_redirects=True,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    lyrics = data.get("lyrics", "").strip()
+                    if lyrics:
+                        return {"lyrics": lyrics, "source": "lyrics.ovh"}
+
+            # Fallback: LRCLIB — broader multilingual coverage, no API key
+            params = {"artist_name": artist_clean, "track_name": title_clean}
+            if track.album:
+                params["album_name"] = track.album
             resp = await client.get(
-                f"https://api.lyrics.ovh/v1/{track.artist}/{track.title}",
-                follow_redirects=True,
+                "https://lrclib.net/api/get",
+                params=params,
+                headers={"Lrclib-Client": "HeyDJ/2.0 (local-dj-app)"},
+                timeout=8.0,
             )
-        if resp.status_code == 200:
-            data = resp.json()
-            lyrics = data.get("lyrics", "").strip()
-            if lyrics:
-                return {"lyrics": lyrics, "source": "lyrics.ovh"}
+            if resp.status_code == 200:
+                plain = resp.json().get("plainLyrics", "").strip()
+                if plain:
+                    return {"lyrics": plain, "source": "lrclib"}
+
+            # LRCLIB search fallback (when exact match fails)
+            resp2 = await client.get(
+                "https://lrclib.net/api/search",
+                params={"q": f"{artist_clean} {title_clean}"},
+                headers={"Lrclib-Client": "HeyDJ/2.0 (local-dj-app)"},
+                timeout=8.0,
+            )
+            if resp2.status_code == 200:
+                for result in resp2.json():
+                    plain = result.get("plainLyrics", "").strip()
+                    if plain:
+                        return {"lyrics": plain, "source": "lrclib"}
     except Exception:
         pass
 

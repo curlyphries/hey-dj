@@ -28,27 +28,22 @@ export default function NowPlaying() {
       setArtSrc(api.tracks.artUrl(currentTrack.id))
       setArtError(false)
       setLyrics(null)
-      setLyricsOpen(false)
+      // Auto-open and fetch lyrics for every new track
+      setLyricsOpen(true)
+      setLyricsLoading(true)
+      api.tracks.lyrics(currentTrack.id)
+        .then(r => setLyrics(r.lyrics))
+        .catch(() => setLyrics(''))
+        .finally(() => setLyricsLoading(false))
     } else {
       setArtSrc(null)
+      setLyricsOpen(false)
     }
   }, [currentTrack?.id])
 
-  const handleLyricsToggle = useCallback(async () => {
-    if (!currentTrack?.id) return
-    if (lyricsOpen) { setLyricsOpen(false); return }
-    setLyricsOpen(true)
-    if (lyrics !== null) return
-    setLyricsLoading(true)
-    try {
-      const r = await api.tracks.lyrics(currentTrack.id)
-      setLyrics(r.lyrics)
-    } catch {
-      setLyrics('')
-    } finally {
-      setLyricsLoading(false)
-    }
-  }, [currentTrack?.id, lyrics, lyricsOpen])
+  const handleLyricsToggle = useCallback(() => {
+    setLyricsOpen(o => !o)
+  }, [])
 
   useEffect(() => {
     api.playback.state().then((s: any) => {
@@ -63,9 +58,17 @@ export default function NowPlaying() {
     if (!audio) return
 
     // Reflect actual audio state on mount (e.g. navigating back to Now Playing)
-    setIsPlaying(!audio.paused)
+    if (!audio.paused) {
+      setup()
+      setIsPlaying(true)
+      setVizActive(true)
+    }
 
-    const onPlay = () => { setIsPlaying(true); setVizActive(true) }
+    const onPlay = () => {
+      setup()
+      setIsPlaying(true)
+      setVizActive(true)
+    }
     const onPause = () => setIsPlaying(false)
     audio.addEventListener('play', onPlay)
     audio.addEventListener('pause', onPause)
@@ -231,7 +234,7 @@ export default function NowPlaying() {
 
       {/* Lyrics */}
       {currentTrack && (
-        <div className="w-full max-w-xs">
+        <div className="w-full">
           <button
             onClick={handleLyricsToggle}
             className="flex items-center gap-2 w-full px-3 py-2 rounded-lg bg-surface-2 hover:bg-surface-3 transition-colors text-sm text-slate-400 hover:text-slate-200"
@@ -244,7 +247,7 @@ export default function NowPlaying() {
             }
           </button>
           {lyricsOpen && (
-            <div className="mt-1 px-3 py-3 rounded-lg bg-surface-1 max-h-64 overflow-y-auto text-xs text-slate-300 leading-relaxed whitespace-pre-wrap">
+            <div className="mt-1 px-4 py-4 rounded-lg bg-surface-1 max-h-96 overflow-y-auto text-sm text-slate-200 leading-loose whitespace-pre-wrap">
               {lyricsLoading
                 ? <span className="text-slate-500">Fetching lyrics…</span>
                 : lyrics
