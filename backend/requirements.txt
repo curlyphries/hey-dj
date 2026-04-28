@@ -21,6 +21,7 @@ jinja2==3.1.5
 # DB
 sqlalchemy==2.0.36
 aiosqlite==0.20.0
+alembic==1.18.4
 
 # File watching
 watchdog==6.0.0
