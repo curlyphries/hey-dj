@@ -1,15 +1,18 @@
 import asyncio
+import hmac
 import os
 import time
 import logging
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Header, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, func, desc
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import settings
 from ..db.database import get_db
 from ..db.models import Track, QueueEntry, Request, Playlist, PlaylistTrack, Session as DJSession, DailyStat
 from ..dj.queue_manager import queue_manager
@@ -18,12 +21,27 @@ from ..dj.orchestrator import orchestrator
 from ..library.scanner import scan_library
 from ..tts.kokoro_tts import synthesize as tts_synth, is_available as tts_available
 from ..llm.templates import PERSONA_MODIFIERS
-from ..llm.state import llm_state
+from ..llm.state import llm_state, validate_llm_url
 from ..audio.engine import _load_segment, segment_to_mp3_bytes
 from .websocket import hub
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def require_admin(x_admin_token: Optional[str] = Header(default=None)) -> None:
+    """Enforce admin-token auth on settings-mutation endpoints.
+
+    When `settings.admin_token` is empty (default), the dependency permits
+    all requests — preserving the open-by-default UX for local-only use.
+    Once set, the request must include `X-Admin-Token: <token>` matching
+    via constant-time comparison.
+    """
+    expected = settings.admin_token
+    if not expected:
+        return
+    if not x_admin_token or not hmac.compare_digest(x_admin_token, expected):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Admin token required")
 
 # ─── WebSocket ────────────────────────────────────────────────────────────────
 
@@ -273,7 +291,7 @@ async def clear_queue():
 
 class RequestBody(BaseModel):
     track_id: int
-    session_id: str = "anonymous"
+    session_id: str = Field(default="anonymous", max_length=64)
 
 
 @router.post("/api/requests")
@@ -308,7 +326,7 @@ async def get_requests(db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Request, Track)
         .join(Track, Request.track_id == Track.id)
-        .where(Request.acknowledged == False)  # noqa
+        .where(Request.acknowledged.is_(False))
         .order_by(Request.requested_at)
     )
     return {
@@ -378,14 +396,17 @@ async def get_llm_settings():
     return llm_state.to_dict()
 
 
-@router.post("/api/llm/settings")
+@router.post("/api/llm/settings", dependencies=[Depends(require_admin)])
 async def update_llm_settings(body: LLMSettingsBody):
-    llm_state.update(
-        url=body.url,
-        model=body.model,
-        api_key=body.api_key,
-        use_openai_compat=body.use_openai_compat,
-    )
+    try:
+        llm_state.update(
+            url=body.url,
+            model=body.model,
+            api_key=body.api_key,
+            use_openai_compat=body.use_openai_compat,
+        )
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     await hub.broadcast({"type": "llm_settings_change", "payload": llm_state.to_dict()})
     return {"ok": True}
 
@@ -456,13 +477,13 @@ async def list_playlists(db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.post("/api/playlists")
+@router.post("/api/playlists", status_code=status.HTTP_201_CREATED)
 async def create_playlist(body: PlaylistCreate, db: AsyncSession = Depends(get_db)):
     pl = Playlist(name=body.name.strip(), created_at=time.time())
     db.add(pl)
     try:
         await db.commit()
-    except Exception:
+    except IntegrityError:
         await db.rollback()
         raise HTTPException(409, "Playlist name already exists")
     await db.refresh(pl)
@@ -505,7 +526,7 @@ async def rename_playlist(pl_id: int, body: PlaylistRename, db: AsyncSession = D
     pl.name = body.name.strip()
     try:
         await db.commit()
-    except Exception:
+    except IntegrityError:
         await db.rollback()
         raise HTTPException(409, "Playlist name already exists")
     return {"ok": True, "name": pl.name}
@@ -646,8 +667,7 @@ class TTSPreviewBody(BaseModel):
 async def tts_preview(body: TTSPreviewBody):
     if not tts_available():
         raise HTTPException(503, "Kokoro TTS not available")
-    loop = asyncio.get_event_loop()
-    wav = await loop.run_in_executor(None, tts_synth, body.text)
+    wav = await asyncio.get_running_loop().run_in_executor(None, tts_synth, body.text)
     if wav is None:
         raise HTTPException(500, "TTS synthesis failed")
     return StreamingResponse(iter([wav]), media_type="audio/wav")

@@ -5,8 +5,30 @@ Values here override the .env defaults without requiring a server restart.
 The orchestrator and client always read from this module, falling back to
 the settings object when fields are empty.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from urllib.parse import urlparse
+
 from ..config import settings
+
+
+def validate_llm_url(url: str) -> str:
+    """Validate and normalize an LLM endpoint URL.
+
+    Rejects non-http(s) schemes (file://, javascript:, etc.) and malformed
+    URLs. This is a basic SSRF-mitigation: combined with the optional admin
+    token, it limits the surface for redirecting the backend at arbitrary
+    services. Returns the stripped URL on success; raises ValueError on
+    invalid input.
+    """
+    cleaned = (url or "").strip()
+    if not cleaned:
+        return ""
+    parsed = urlparse(cleaned)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("URL must use http:// or https://")
+    if not parsed.netloc:
+        raise ValueError("URL must include a host")
+    return cleaned
 
 
 @dataclass
@@ -33,7 +55,7 @@ class LLMRuntimeState:
         }
 
     def update(self, url: str, model: str, api_key: str, use_openai_compat: bool) -> None:
-        self.url = url.strip()
+        self.url = validate_llm_url(url)
         self.model = model.strip()
         if api_key != "":           # empty string means "clear"; sentinel "UNCHANGED" not needed
             self.api_key = api_key
