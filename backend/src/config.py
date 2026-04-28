@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     data_dir: str = "./data"
     cors_origins: str = "*"
 
+    # Optional shared secret protecting settings-mutation endpoints.
+    # When empty, those endpoints remain open (default for local-only use).
+    admin_token: str = ""
+
     @field_validator("music_dir", "data_dir", mode="before")
     @classmethod
     def expand_path(cls, v: str) -> str:
